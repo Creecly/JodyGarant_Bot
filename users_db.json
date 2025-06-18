@@ -1,0 +1,66 @@
+{
+    "users": {
+        "7586266147": {
+            "username": "jodykey",
+            "display_name": "Jodykey",
+            "balance": 1950.0,
+            "banned": false,
+            "ban_info": null,
+            "transactions": [],
+            "deals": [
+                "DL20250618164438-4LVBUW",
+                "DL20250618224342-09PI5H"
+            ],
+            "registered_at": "2025-06-18T16:23:09.259996",
+            "last_active": "2025-06-18T22:43:44.741630",
+            "id": 7586266147
+        },
+        "8022396358": {
+            "username": "creecly",
+            "display_name": "Creecly",
+            "balance": 50.0,
+            "banned": false,
+            "ban_info": null,
+            "transactions": [],
+            "deals": [],
+            "registered_at": "2025-06-18T16:27:34.164928",
+            "last_active": "2025-06-18T22:44:15.508056",
+            "id": 8022396358
+        }
+    },
+    "transactions": {
+        "TX20250618164316-H5KCF8": {
+            "user_id": 7586266147,
+            "amount": 2000.0,
+            "admin_id": 7586266147,
+            "type": "admin_add",
+            "timestamp": "2025-06-18T16:43:16.445323"
+        }
+    },
+    "deals": {
+        "DL20250618164438-4LVBUW": {
+            "from_user_id": 7586266147,
+            "to_user_id": 8022396358,
+            "amount": 20.0,
+            "description": "Крипто подарок\nОтправить деньги\n2 дня",
+            "status": "completed",
+            "created_at": "2025-06-18T16:44:38.619836",
+            "messages": [],
+            "completed_at": "2025-06-18T16:46:15.657320"
+        },
+        "DL20250618224342-09PI5H": {
+            "from_user_id": 7586266147,
+            "from_username": "Jodykey",
+            "to_user_id": 8022396358,
+            "to_username": "Creecly",
+            "amount": 30.0,
+            "description": "лыдаы вщаташттыоат лытлыталтытытататататат",
+            "status": "completed",
+            "created_at": "2025-06-18T22:43:42.180396",
+            "messages": [],
+            "completed_at": "2025-06-18T22:44:15.509053",
+            "completed_by": 8022396358
+        }
+    },
+    "invoices": {}
+}
