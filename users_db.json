@@ -3,16 +3,17 @@
         "7586266147": {
             "username": "jodykey",
             "display_name": "Jodykey",
-            "balance": 1950.0,
+            "balance": 2020.0,
             "banned": false,
             "ban_info": null,
             "transactions": [],
             "deals": [
                 "DL20250618164438-4LVBUW",
-                "DL20250618224342-09PI5H"
+                "DL20250618224342-09PI5H",
+                "DL20250619120135-U529XH"
             ],
             "registered_at": "2025-06-18T16:23:09.259996",
-            "last_active": "2025-06-18T22:43:44.741630",
+            "last_active": "2025-06-19T12:01:37.544685",
             "id": 7586266147
         },
         "8022396358": {
@@ -26,6 +27,18 @@
             "registered_at": "2025-06-18T16:27:34.164928",
             "last_active": "2025-06-18T22:44:15.508056",
             "id": 8022396358
+        },
+        "6890421398": {
+            "username": "seriouslyblojo",
+            "display_name": "SeriouslyBlojo",
+            "balance": 0.0,
+            "banned": false,
+            "ban_info": null,
+            "transactions": [],
+            "deals": [],
+            "registered_at": "2025-06-19T11:59:18.759052",
+            "last_active": "2025-06-19T11:59:18.759052",
+            "id": 6890421398
         }
     },
     "transactions": {
@@ -60,6 +73,19 @@
             "messages": [],
             "completed_at": "2025-06-18T22:44:15.509053",
             "completed_by": 8022396358
+        },
+        "DL20250619120135-U529XH": {
+            "from_user_id": 7586266147,
+            "from_username": "Jodykey",
+            "to_user_id": 8022396358,
+            "to_username": "Creecly",
+            "amount": 30.0,
+            "description": "Jajsbsjsjs jasnsj jajans banansns",
+            "status": "dispute",
+            "created_at": "2025-06-19T12:01:35.900159",
+            "from_confirmed": true,
+            "to_confirmed": false,
+            "messages": []
         }
     },
     "invoices": {}

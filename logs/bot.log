@@ -244,3 +244,6 @@ TypeError: 'NoneType' object is not subscriptable
 2025-06-18 22:51:27,771 - aiogram.dispatcher - INFO - Polling stopped for bot @JodyGarant_Bot id=8052721063 - '𝙅𝙤𝙙𝙮 𝙂𝙖𝙧𝙖𝙣𝙩'
 2025-06-18 22:51:27,773 - __main__ - INFO - Bot stopped by user
 2025-06-18 22:51:27,773 - __main__ - INFO - Bot shutdown complete
+2025-06-19 11:22:11,089 - __main__ - INFO - Database initialized
+2025-06-19 11:26:45,357 - __main__ - INFO - Database initialized
+2025-06-19 11:51:42,022 - __main__ - INFO - Database initialized

@@ -8,12 +8,13 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 import requests
-
 
 # Настройка логгирования
 def setup_logging():
@@ -30,7 +31,6 @@ def setup_logging():
     )
     return logging.getLogger(__name__)
 
-
 logger = setup_logging()
 
 # Конфигурация
@@ -41,7 +41,6 @@ CRYPTOBOT_API_URL = "https://pay.crypt.bot/api/"
 DB_FILE = "users_db.json"
 MIN_DEPOSIT = 1.0
 MIN_WITHDRAW = 5.0
-
 
 # Класс для работы с базой данных JSON
 class JSONDatabase:
@@ -122,6 +121,13 @@ class JSONDatabase:
             self.save()
             logger.info(f"User {user_id} banned by {admin_id}. Reason: {reason}")
 
+    def unban_user(self, user_id: int):
+        if self.user_exists(user_id):
+            self.data["users"][str(user_id)]["banned"] = False
+            self.data["users"][str(user_id)]["ban_info"] = None
+            self.save()
+            logger.info(f"User {user_id} unbanned")
+
     def search_user(self, query: str) -> Optional[Dict]:
         query = query.lower().strip('@')
         for user_id, user in self.data["users"].items():
@@ -136,12 +142,10 @@ class JSONDatabase:
         random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         return f"{prefix}{timestamp}-{random_str}"
 
-
 # Инициализация
 db = JSONDatabase()
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-
 
 # Состояния FSM
 class Form(StatesGroup):
@@ -157,7 +161,8 @@ class Form(StatesGroup):
     dispute = State()
     admin_ban_user = State()
     admin_add_balance = State()
-
+    admin_unban_user = State()
+    deal_confirmation = State()
 
 # Утилиты
 async def show_main_menu(message: types.Message):
@@ -172,9 +177,8 @@ async def show_main_menu(message: types.Message):
     )
     logger.info(f"Showed main menu to {message.from_user.id}")
 
-
 # Обработчики команд
-@dp.message(Command("start"))
+@dp.message(CommandStart())
 async def start(message: types.Message):
     user = message.from_user
     db.add_user(user.id, user.username or user.first_name)
@@ -197,7 +201,6 @@ async def start(message: types.Message):
     await show_main_menu(message)
     logger.info(f"New session started for {user.id}")
 
-
 @dp.message(F.text == "ℹ️ Помощь")
 async def help_command(message: types.Message):
     help_text = (
@@ -208,8 +211,7 @@ async def help_command(message: types.Message):
         "💼 <b>Как работать со сделками:</b>\n"
         "1. Найдите пользователя через поиск\n"
         "2. Создайте сделку с описанием условий\n"
-        "3. После выполнения условий получатель должен использовать команду\n"
-        "   <code>/complete_deal_XXXXXX</code>\n\n"
+        "3. После выполнения условий обе стороны должны подтвердить завершение\n\n"
         "⚖️ <b>Если возникли проблемы:</b>\n"
         "Откройте спор командой <code>/dispute_XXXXXX</code>\n\n"
         "💳 <b>Управление балансом:</b>\n"
@@ -219,7 +221,6 @@ async def help_command(message: types.Message):
     )
     await message.answer(help_text)
     logger.info(f"Help requested by {message.from_user.id}")
-
 
 @dp.message(F.text == "🆘 Поддержка")
 async def support(message: types.Message, state: FSMContext):
@@ -233,7 +234,6 @@ async def support(message: types.Message, state: FSMContext):
     )
     await state.set_state(Form.support_message)
     logger.info(f"Support requested by {message.from_user.id}")
-
 
 @dp.message(Form.support_message)
 async def process_support(message: types.Message, state: FSMContext):
@@ -428,7 +428,9 @@ def create_cryptobot_invoice(amount: float, user_id: int):
             timeout=10
         )
         if response.status_code == 200:
-            return response.json().get("result")
+            result = response.json().get("result")
+            if result and "pay_url" in result:
+                return result
         logger.error(f"CryptoPay API error: {response.text}")
     except Exception as e:
         logger.error(f"CryptoPay connection error: {e}")
@@ -607,6 +609,59 @@ async def process_withdraw_address(message: types.Message, state: FSMContext):
     logger.info(f"Withdraw request from {message.from_user.id}: {amount} USDT to {address}")
 
 
+@dp.message(F.text.startswith("/approve_"))
+async def approve_withdraw(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("❌ Доступ запрещён")
+
+    tx_id = message.text.split("_")[1].strip()
+    tx = db.data["transactions"].get(tx_id)
+
+    if not tx or tx["status"] != "pending":
+        return await message.answer("❌ Транзакция не найдена или уже обработана")
+
+    tx["status"] = "completed"
+    tx["approved_by"] = message.from_user.id
+    tx["approved_at"] = datetime.now().isoformat()
+    db.save()
+
+    await message.answer(f"✅ Вывод {tx_id} подтверждён")
+    await bot.send_message(
+        tx["user_id"],
+        f"✅ Ваш вывод на сумму {abs(tx['amount'])} USDT выполнен\n"
+        f"🌐 Сеть: {tx['network']}\n"
+        f"📭 Адрес: {tx['address']}\n"
+        f"🆔 Транзакция: {tx_id}"
+    )
+
+
+@dp.message(F.text.startswith("/reject_"))
+async def reject_withdraw(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("❌ Доступ запрещён")
+
+    tx_id = message.text.split("_")[1].strip()
+    tx = db.data["transactions"].get(tx_id)
+
+    if not tx or tx["status"] != "pending":
+        return await message.answer("❌ Транзакция не найдена или уже обработана")
+
+    # Возвращаем средства на баланс
+    db.update_balance(tx["user_id"], abs(tx["amount"]))
+    tx["status"] = "rejected"
+    tx["rejected_by"] = message.from_user.id
+    tx["rejected_at"] = datetime.now().isoformat()
+    db.save()
+
+    await message.answer(f"❌ Вывод {tx_id} отклонён")
+    await bot.send_message(
+        tx["user_id"],
+        f"❌ Ваш вывод отклонён. Средства возвращены на баланс\n"
+        f"🆔 Транзакция: {tx_id}\n"
+        f"💳 Текущий баланс: {db.get_user(tx['user_id'])['balance']} USDT"
+    )
+
+
 # =============================================
 # СДЕЛКИ И ГАРАНТИИ
 # =============================================
@@ -713,6 +768,8 @@ async def process_deal_description(message: types.Message, state: FSMContext):
         "description": description,
         "status": "pending",
         "created_at": datetime.now().isoformat(),
+        "from_confirmed": False,
+        "to_confirmed": False,
         "messages": []
     }
     db.save()
@@ -765,8 +822,8 @@ async def confirm_deal(callback: types.CallbackQuery, state: FSMContext):
             f"👤 <b>Для:</b> {deal['to_username']}\n"
             f"💰 <b>Сумма:</b> {deal['amount']:.2f} USDT\n\n"
             f"📝 <b>Условия:</b>\n{deal['description']}\n\n"
-            "<i>Для завершения партнер должен использовать команду:</i>\n"
-            f"<code>/complete_deal_{deal_id}</code>",
+            "<i>Для завершения обе стороны должны подтвердить выполнение условий:</i>\n"
+            f"<code>/confirm_deal_{deal_id}</code>",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -780,8 +837,8 @@ async def confirm_deal(callback: types.CallbackQuery, state: FSMContext):
             f"👤 <b>От:</b> {deal['from_username']}\n"
             f"💰 <b>Сумма:</b> {deal['amount']:.2f} USDT\n\n"
             f"📝 <b>Условия:</b>\n{deal['description']}\n\n"
-            "<i>Для завершения сделки используйте команду:</i>\n"
-            f"<code>/complete_deal_{deal_id}</code>\n\n"
+            "<i>Для завершения обе стороны должны подтвердить выполнение условий:</i>\n"
+            f"<code>/confirm_deal_{deal_id}</code>\n\n"
             "<i>Если есть проблемы, откройте спор:</i>\n"
             f"<code>/dispute_{deal_id}</code>",
             parse_mode="HTML"
@@ -794,8 +851,8 @@ async def confirm_deal(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"Deal {deal_id} confirmed by {callback.from_user.id}")
 
 
-@dp.message(F.text.startswith("/complete_deal_"))
-async def complete_deal(message: types.Message):
+@dp.message(F.text.startswith("/confirm_deal_"))
+async def confirm_deal_completion(message: types.Message):
     user = db.get_user(message.from_user.id)
     if user["banned"]:
         return await message.answer("⛔ Ваш аккаунт заблокирован")
@@ -807,42 +864,150 @@ async def complete_deal(message: types.Message):
         if not deal or deal["status"] != "active":
             return await message.answer("❌ Сделка не найдена или уже завершена")
 
-        if message.from_user.id != deal["to_user_id"]:
-            return await message.answer("❌ Только получатель может завершить сделку")
+        if message.from_user.id == deal["from_user_id"]:
+            deal["from_confirmed"] = True
+        elif message.from_user.id == deal["to_user_id"]:
+            deal["to_confirmed"] = True
+        else:
+            return await message.answer("❌ Вы не участник этой сделки")
 
-        # Переводим средства получателю
-        db.update_balance(deal["to_user_id"], deal["amount"])
-        deal["status"] = "completed"
-        deal["completed_at"] = datetime.now().isoformat()
-        deal["completed_by"] = message.from_user.id
         db.save()
 
-        # Уведомление получателю
-        await message.answer(
-            f"✅ <b>Сделка #{deal_id} завершена!</b>\n\n"
-            f"💰 <b>Сумма:</b> {deal['amount']:.2f} USDT\n"
-            f"💳 <b>Зачислено на баланс:</b> {db.get_user(message.from_user.id)['balance']:.2f} USDT",
-            parse_mode="HTML"
+        # Проверяем, подтвердили ли обе стороны
+        if deal["from_confirmed"] and deal["to_confirmed"]:
+            # Переводим средства получателю
+            db.update_balance(deal["to_user_id"], deal["amount"])
+            deal["status"] = "completed"
+            deal["completed_at"] = datetime.now().isoformat()
+            db.save()
+
+            # Уведомляем участников
+            await message.answer(
+                f"✅ <b>Сделка #{deal_id} успешно завершена!</b>\n\n"
+                f"💰 Сумма: {deal['amount']:.2f} USDT переведена получателю."
+            )
+
+            other_user_id = deal["to_user_id"] if message.from_user.id == deal["from_user_id"] else deal["from_user_id"]
+            try:
+                await bot.send_message(
+                    other_user_id,
+                    f"✅ <b>Сделка #{deal_id} успешно завершена!</b>\n\n"
+                    f"💰 Сумма: {deal['amount']:.2f} USDT переведена получателю.\n"
+                    f"💳 Ваш баланс: {db.get_user(other_user_id)['balance']:.2f} USDT"
+                )
+            except Exception as e:
+                logger.error(f"Error notifying user {other_user_id}: {e}")
+        else:
+            await message.answer(
+                "✅ Ваше подтверждение получено. Ожидаем подтверждения второй стороны."
+            )
+
+    except Exception as e:
+        logger.error(f"Deal confirmation error: {e}")
+        await message.answer("❌ Ошибка подтверждения сделки")
+
+
+@dp.message(F.text.startswith("/dispute_"))
+async def open_dispute(message: types.Message):
+    user = db.get_user(message.from_user.id)
+    if user["banned"]:
+        return await message.answer("⛔ Ваш аккаунт заблокирован")
+
+    try:
+        deal_id = message.text.split("_")[1].strip()
+        deal = db.data["deals"].get(deal_id)
+
+        if not deal:
+            return await message.answer("❌ Сделка не найдена")
+
+        if message.from_user.id not in [deal["from_user_id"], deal["to_user_id"]]:
+            return await message.answer("❌ Вы не участник этой сделки")
+
+        deal["status"] = "dispute"
+        db.save()
+
+        await bot.send_message(
+            ADMIN_ID,
+            f"⚖️ <b>СПОР ПО СДЕЛКЕ #{deal_id}</b>\n\n"
+            f"👤 Инициатор: {deal['from_username']} (ID: {deal['from_user_id']})\n"
+            f"👤 Получатель: {deal['to_username']} (ID: {deal['to_user_id']})\n"
+            f"💰 Сумма: {deal['amount']:.2f} USDT\n\n"
+            f"📝 Условия сделки:\n{deal['description']}\n\n"
+            f"👤 Открыл спор: @{user['username']} (ID: {message.from_user.id})\n\n"
+            f"<b>Для разрешения спора:</b>\n"
+            f"/resolve_{deal_id} [ID_победителя] [комментарий]\n\n"
+            f"Пример:\n"
+            f"/resolve_{deal_id} {deal['from_user_id']} Условия выполнены"
         )
 
-        # Уведомление инициатору
-        try:
-            await bot.send_message(
-                deal["from_user_id"],
-                f"ℹ️ <b>Сделка #{deal_id} завершена</b>\n\n"
-                f"👤 <b>Получатель:</b> {deal['to_username']}\n"
-                f"💰 <b>Сумма:</b> {deal['amount']:.2f} USDT\n"
-                f"🕒 <b>Время:</b> {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-                "<i>Средства успешно переведены контрагенту.</i>",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error(f"Error sending completion notification: {e}")
+        await message.answer(
+            "⚖️ <b>Спор успешно открыт!</b>\n\n"
+            "Администратор рассмотрит ваш спор в ближайшее время.\n"
+            "Вы получите уведомление о решении."
+        )
 
-        logger.info(f"Deal {deal_id} completed by {message.from_user.id}")
     except Exception as e:
-        logger.error(f"Deal complete error: {e}")
-        await message.answer("❌ Ошибка завершения сделки")
+        logger.error(f"Dispute error: {e}")
+        await message.answer("❌ Ошибка. Используйте: /dispute_ID_сделки")
+
+
+@dp.message(F.text.startswith("/resolve_"))
+async def resolve_dispute(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("❌ Доступ запрещён")
+
+    try:
+        parts = message.text.split()
+        deal_id = parts[0].split("_")[1]
+        winner_id = int(parts[1])
+        comment = " ".join(parts[2:]) if len(parts) > 2 else "Решение администратора"
+
+        deal = db.data["deals"].get(deal_id)
+        if not deal or deal["status"] != "dispute":
+            return await message.answer("❌ Сделка не найдена или статус не 'dispute'")
+
+        if winner_id not in [deal["from_user_id"], deal["to_user_id"]]:
+            return await message.answer("❌ Указан неверный ID победителя")
+
+        # Переводим средства победителю
+        db.update_balance(winner_id, deal["amount"])
+        deal["status"] = "resolved"
+        deal["resolution"] = {
+            "by": message.from_user.id,
+            "at": datetime.now().isoformat(),
+            "winner": winner_id,
+            "comment": comment
+        }
+        db.save()
+
+        # Уведомляем участников
+        for user_id in [deal["from_user_id"], deal["to_user_id"]]:
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"⚖️ <b>Спор по сделке #{deal_id} разрешён</b>\n\n"
+                    f"🏆 Победитель: {'Вы' if user_id == winner_id else f'Пользователь {winner_id}'}\n"
+                    f"📝 Комментарий: {comment}\n"
+                    f"💰 Сумма: {deal['amount']:.2f} USDT\n\n"
+                    f"💳 Текущий баланс: {db.get_user(user_id)['balance']:.2f} USDT"
+                )
+            except Exception as e:
+                logger.error(f"Can't notify user {user_id}: {e}")
+
+        await message.answer(
+            "✅ <b>Спор успешно разрешён</b>\n\n"
+            f"🏆 Победитель: {winner_id}\n"
+            f"📝 Комментарий: {comment}"
+        )
+
+    except Exception as e:
+        logger.error(f"Resolve dispute error: {e}")
+        await message.answer(
+            "❌ Ошибка. Формат команды:\n"
+            "/resolve_ID_сделки ID_победителя [комментарий]\n\n"
+            "Пример:\n"
+            f"/resolve_{deal_id} {deal['from_user_id']} Условия выполнены"
+        )
 
 
 # =============================================
@@ -858,11 +1023,13 @@ async def admin_panel(message: types.Message):
     builder = InlineKeyboardBuilder()
     builder.add(
         types.InlineKeyboardButton(text="🔨 Забанить", callback_data="admin:ban"),
+        types.InlineKeyboardButton(text="🔓 Разбанить", callback_data="admin:unban"),
         types.InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin:balance"),
         types.InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
-        types.InlineKeyboardButton(text="🔄 Выплаты", callback_data="admin:withdrawals")
+        types.InlineKeyboardButton(text="🔄 Выплаты", callback_data="admin:withdrawals"),
+        types.InlineKeyboardButton(text="⚖️ Активные споры", callback_data="admin:disputes")
     )
-    builder.adjust(2, 2)
+    builder.adjust(2, 2, 1, 1)
 
     await message.answer(
         "🛠 <b>Админ-панель:</b>",
@@ -874,7 +1041,7 @@ async def admin_panel(message: types.Message):
 @dp.callback_query(F.data.startswith("admin:"))
 async def admin_actions(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
-        return await callback.answer("❌ Доступ запрещен")
+        return await callback.answer("❌ Доступ запрещен", show_alert=True)
 
     action = callback.data.split(":")[1]
 
@@ -885,10 +1052,18 @@ async def admin_actions(callback: types.CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
         await state.set_state(Form.admin_ban_user)
+    elif action == "unban":
+        await callback.message.answer(
+            "Введите ID пользователя для разбана:\n"
+            "<code>123456789</code>",
+            parse_mode="HTML"
+        )
+        await state.set_state(Form.admin_unban_user)
     elif action == "balance":
         await callback.message.answer(
-            "Введите ID и сумму через пробел:\n"
-            "<code>123456789 100.50</code>",
+            "Введите ID и сумму через пробел (для снятия укажите минус):\n"
+            "<code>123456789 100.50</code>\n"
+            "<code>123456789 -50.00</code>",
             parse_mode="HTML"
         )
         await state.set_state(Form.admin_add_balance)
@@ -898,8 +1073,106 @@ async def admin_actions(callback: types.CallbackQuery, state: FSMContext):
     elif action == "withdrawals":
         withdrawals = await get_pending_withdrawals()
         await callback.message.edit_text(withdrawals, parse_mode="HTML")
+    elif action == "disputes":
+        disputes = await get_active_disputes()
+        await callback.message.edit_text(disputes, parse_mode="HTML")
 
     await callback.answer()
+
+
+@dp.message(Form.admin_ban_user)
+async def process_ban_user(message: types.Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        user_id = int(parts[0])
+        reason = " ".join(parts[1:]) if len(parts) > 1 else "Нарушение правил"
+
+        if not db.user_exists(user_id):
+            return await message.answer("❌ Пользователь не найден")
+
+        db.ban_user(user_id, message.from_user.id, reason)
+
+        try:
+            await bot.send_message(
+                user_id,
+                f"⛔ <b>Ваш аккаунт заблокирован администратором</b>\n\n"
+                f"📝 Причина: {reason}\n\n"
+                f"По вопросам обращайтесь в поддержку."
+            )
+        except Exception as e:
+            logger.error(f"Can't notify banned user {user_id}: {e}")
+
+        await message.answer(
+            f"✅ Пользователь {user_id} заблокирован\n"
+            f"Причина: {reason}"
+        )
+    except Exception as e:
+        logger.error(f"Ban user error: {e}")
+        await message.answer("❌ Ошибка. Формат: ID_пользователя [причина]")
+    finally:
+        await state.clear()
+
+
+@dp.message(Form.admin_unban_user)
+async def process_unban_user(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text.strip())
+
+        if not db.user_exists(user_id):
+            return await message.answer("❌ Пользователь не найден")
+
+        db.unban_user(user_id)
+
+        try:
+            await bot.send_message(
+                user_id,
+                "✅ <b>Ваш аккаунт разблокирован администратором</b>\n\n"
+                "Теперь вы снова можете пользоваться ботом."
+            )
+        except Exception as e:
+            logger.error(f"Can't notify unbanned user {user_id}: {e}")
+
+        await message.answer(f"✅ Пользователь {user_id} разблокирован")
+    except Exception as e:
+        logger.error(f"Unban user error: {e}")
+        await message.answer("❌ Ошибка. Введите ID пользователя")
+    finally:
+        await state.clear()
+
+
+@dp.message(Form.admin_add_balance)
+async def process_add_balance(message: types.Message, state: FSMContext):
+    try:
+        parts = message.text.split()
+        user_id = int(parts[0])
+        amount = float(parts[1])
+
+        if not db.user_exists(user_id):
+            return await message.answer("❌ Пользователь не найден")
+
+        db.update_balance(user_id, amount)
+        user = db.get_user(user_id)
+
+        try:
+            await bot.send_message(
+                user_id,
+                f"ℹ️ <b>Ваш баланс изменён администратором</b>\n\n"
+                f"💰 Изменение: {amount:.2f} USDT\n"
+                f"💳 Новый баланс: {user['balance']:.2f} USDT"
+            )
+        except Exception as e:
+            logger.error(f"Can't notify user {user_id}: {e}")
+
+        await message.answer(
+            f"✅ Баланс пользователя {user_id} изменён\n"
+            f"💰 Изменение: {amount:.2f} USDT\n"
+            f"💳 Новый баланс: {user['balance']:.2f} USDT"
+        )
+    except Exception as e:
+        logger.error(f"Add balance error: {e}")
+        await message.answer("❌ Ошибка. Формат: ID_пользователя сумма")
+    finally:
+        await state.clear()
 
 
 async def get_system_stats() -> str:
@@ -908,13 +1181,16 @@ async def get_system_stats() -> str:
     total_balance = sum(u["balance"] for u in db.data["users"].values())
     total_deals = len(db.data["deals"])
     active_deals = len([d for d in db.data["deals"].values() if d["status"] == "active"])
+    pending_withdrawals = len(
+        [t for t in db.data["transactions"].values() if t["type"] == "withdraw" and t["status"] == "pending"])
 
     return (
         "📊 <b>Системная статистика</b>\n\n"
         f"👥 <b>Пользователи:</b> {total_users} ({active_users} активных)\n"
         f"💰 <b>Общий баланс:</b> {total_balance:.2f} USDT\n"
-        f"🤝 <b>Сделки:</b> {total_deals} ({active_deals} активных)\n\n"
-        f"🔄 <b>Последняя активность:</b>\n{datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        f"🤝 <b>Сделки:</b> {total_deals} ({active_deals} активных)\n"
+        f"🔄 <b>Ожидают выплаты:</b> {pending_withdrawals}\n\n"
+        f"🕒 <b>Последнее обновление:</b>\n{datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
 
 
@@ -931,11 +1207,35 @@ async def get_pending_withdrawals() -> str:
     for tx in pending:
         user = db.get_user(tx["user_id"])
         text += (
-            f"🆔 <code>{tx['user_id']}</code> (@{user['username']})\n"
+            f"👤 @{user['username']} (ID: {tx['user_id']})\n"
             f"💰 {abs(tx['amount']):.2f} USDT ({tx['network']})\n"
             f"📭 {tx['address']}\n"
             f"🆔 TX: <code>{tx['id']}</code>\n"
             f"⏳ {datetime.fromisoformat(tx['created_at']).strftime('%d.%m %H:%M')}\n\n"
+            f"Для подтверждения: /approve_{tx['id']}\n"
+            f"Для отмены: /reject_{tx['id']}\n\n"
+        )
+    return text
+
+
+async def get_active_disputes() -> str:
+    disputes = [
+                   d for d in db.data["deals"].values()
+                   if d["status"] == "dispute"
+               ][:10]  # Последние 10
+
+    if not disputes:
+        return "⚖️ Нет активных споров"
+
+    text = "⚖️ <b>Активные споры:</b>\n\n"
+    for deal in disputes:
+        text += (
+            f"🆔 <code>{deal['id']}</code>\n"
+            f"👤 От: {deal['from_username']} (ID: {deal['from_user_id']})\n"
+            f"👤 Кому: {deal['to_username']} (ID: {deal['to_user_id']})\n"
+            f"💰 Сумма: {deal['amount']:.2f} USDT\n\n"
+            f"Для разрешения:\n"
+            f"/resolve_{deal['id']} [ID_победителя] [комментарий]\n\n"
         )
     return text
 
